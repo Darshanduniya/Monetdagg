@@ -1,0 +1,45 @@
+
+import monetdb.sql as monetdb
+from datetime import datetime
+from airflow.api.client.local_client import Client
+import time
+import uuid
+
+# Connect to the MonetDB database
+conn = monetdb.connect(username="username", password="password", hostname="localhost", database="mydatabase")
+
+# Create a cursor object
+cursor = conn.cursor()
+
+# Check if the other table has type='x' and status='success' and order by executedtime desc
+query = "SELECT COUNT(*) FROM othertable WHERE type='x' AND status='success' ORDER BY executedtime DESC"
+cursor.execute(query)
+result = cursor.fetchone()[0]
+
+# If the condition is satisfied, insert a row into the audit table with unique id, flag, and timestamp
+if result > 0:
+    # Generate a unique id for the row
+    unique_id = str(uuid.uuid4())
+
+    query = "INSERT INTO audittable (unique_id, flag, timestamp) VALUES ('{}', 1, '{}')".format(unique_id, datetime.utcnow())
+    cursor.execute(query)
+    conn.commit()
+
+    # Connect to the Airflow API
+    client = Client(None, None)
+
+    # Wait until the Airflow DAG status is completed or for 5 minutes
+    wait_time = 0
+    while client.get_dag("my_dag_id").get_status() == "running" and wait_time < 300:
+        time.sleep(10)
+        wait_time += 10
+
+    # Update the flag in the audit table if the DAG status is success
+    if client.get_dag("my_dag_id").get_status() == "success":
+        query = "UPDATE audittable SET flag = 0 WHERE unique_id = '{}'".format(unique_id)
+        cursor.execute(query)
+        conn.commit()
+
+# Close the cursor and connection
+cursor.close()
+conn.close()
